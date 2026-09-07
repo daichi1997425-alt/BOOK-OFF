@@ -261,7 +261,7 @@ async function recognizeCanvas(canvas) {
 
     const lines = rawLines
       .filter(l => l.text.length >= 4 && l.text.length <= 40)
-      .filter(l => l.confidence >= 55) // 信頼度が低い行は無視
+      .filter(l => l.confidence >= 25) // 信頼度が極端に低い行のみ除外(縦書き等は低スコアになりやすいため緩め)
       .filter(l => !looksLikeNoise(l.text))
       .map(l => l.text);
 
@@ -354,7 +354,7 @@ async function tryResolveIsbn(queryText) {
 
     // OCRで読み取った文字列と、Googleが返したタイトルがどれだけ似ているかを検証。
     // 似ていない場合は「たまたま1件だけヒットしただけ」の誤検出とみなして無視する。
-    if (similarity(queryText, candidate.title) < 0.4) return;
+    if (similarity(queryText, candidate.title) < 0.25) return;
 
     if (!isValidIsbn13(candidate.isbn13)) return;
     if (currentColumnSet.has(candidate.isbn13)) return; // 同一列内の重複は追加しない
