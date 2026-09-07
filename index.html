@@ -263,8 +263,10 @@ function flashOcr(on) {
    ========================================================= */
 async function tryResolveIsbn(queryText) {
   try {
+    const GOOGLE_BOOKS_API_KEY = "AIzaSyB-6wyj8sOBXlylPiG8CGQtJ1JYDfEBo20";
     const url = "https://www.googleapis.com/books/v1/volumes?q=" +
-      encodeURIComponent("intitle:" + queryText) + "&maxResults=5&country=JP";
+      encodeURIComponent("intitle:" + queryText) + "&maxResults=5&country=JP" +
+      "&key=" + GOOGLE_BOOKS_API_KEY;
     const res = await fetch(url);
     if (!res.ok) return;
     const json = await res.json();
