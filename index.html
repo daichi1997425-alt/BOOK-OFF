@@ -238,16 +238,32 @@ async function captureAndRecognize() {
 }
 
 /* カメラ映像・写真アプリの画像、どちらもこの関数でOCR→ISBN確定まで処理する */
+/* テキストがOCRノイズ(値札・記号だけ等)らしいかどうかを判定 */
+function looksLikeNoise(text) {
+  const digitAndSymbolRatio =
+    (text.match(/[0-9¥$%.,\-\/:：、。・()（）]/g) || []).length / text.length;
+  if (digitAndSymbolRatio > 0.5) return true; // 数字・記号が半分以上 → 値札等とみなす
+  const meaningfulChars = (text.match(/[぀-ヿ一-鿿a-zA-Z]/g) || []).length;
+  if (meaningfulChars < 3) return true; // 意味のある文字が少なすぎる
+  return false;
+}
+
 async function recognizeCanvas(canvas) {
   flashOcr(true);
   try {
     const { data } = await Tesseract.recognize(canvas, "jpn+eng", { logger: () => {} });
     flashOcr(false);
 
-    const lines = (data.text || "")
-      .split("\n")
-      .map(l => l.trim())
-      .filter(l => l.length >= 4 && l.length <= 40); // 極端に短い/長いノイズを除外
+    // 行ごとの信頼度が取れる場合はそちらを優先して使う(ノイズ除外の精度が上がる)
+    const rawLines = (data.lines && data.lines.length > 0)
+      ? data.lines.map(l => ({ text: (l.text || "").trim(), confidence: l.confidence ?? 0 }))
+      : (data.text || "").split("\n").map(t => ({ text: t.trim(), confidence: 100 }));
+
+    const lines = rawLines
+      .filter(l => l.text.length >= 4 && l.text.length <= 40)
+      .filter(l => l.confidence >= 55) // 信頼度が低い行は無視
+      .filter(l => !looksLikeNoise(l.text))
+      .map(l => l.text);
 
     for (const line of lines) {
       if (queriedTextCache.has(line)) continue;
@@ -336,6 +352,10 @@ async function tryResolveIsbn(queryText) {
     if (uniqueIsbns.length !== 1) return; // 0件 or 複数候補 → 無視
     const candidate = uniqueIsbns[0];
 
+    // OCRで読み取った文字列と、Googleが返したタイトルがどれだけ似ているかを検証。
+    // 似ていない場合は「たまたま1件だけヒットしただけ」の誤検出とみなして無視する。
+    if (similarity(queryText, candidate.title) < 0.4) return;
+
     if (!isValidIsbn13(candidate.isbn13)) return;
     if (currentColumnSet.has(candidate.isbn13)) return; // 同一列内の重複は追加しない
 
@@ -350,6 +370,34 @@ async function tryResolveIsbn(queryText) {
   } catch (e) {
     // 通信エラー等はこの本を無視し、全体は継続
   }
+}
+
+/* 2つの文字列がどれくらい似ているかを0〜1で返す(Dice係数、2文字組の一致率) */
+function similarity(a, b) {
+  const normalize = s => s.replace(/[\s　]/g, "").toLowerCase();
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (na.length < 2 || nb.length < 2) return na === nb ? 1 : 0;
+
+  const bigrams = s => {
+    const arr = [];
+    for (let i = 0; i < s.length - 1; i++) arr.push(s.slice(i, i + 2));
+    return arr;
+  };
+  const bigramsA = bigrams(na);
+  const bigramsB = bigrams(nb);
+  const counts = new Map();
+  for (const bg of bigramsB) counts.set(bg, (counts.get(bg) || 0) + 1);
+
+  let matches = 0;
+  for (const bg of bigramsA) {
+    const c = counts.get(bg) || 0;
+    if (c > 0) {
+      matches++;
+      counts.set(bg, c - 1);
+    }
+  }
+  return (2 * matches) / (bigramsA.length + bigramsB.length);
 }
 
 /* ISBN-13のチェックディジット検証 */
