@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>BOOK SCANNER</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --panel: #16161d;
+    --text: #f4f4f5;
+    --sub: #9a9aa5;
+    --accent: #2fae6b;
+    --accent-press: #24905a;
+    --danger: #e5484d;
+    --border: #2a2a33;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+  }
+  .screen { display: none; min-height: 100dvh; flex-direction: column; padding: 20px; }
+  .screen.active { display: flex; }
+
+  /* --- top --- */
+  #screen-top { align-items: center; justify-content: center; gap: 18px; text-align: center; }
+  #screen-top h1 { font-size: 22px; letter-spacing: 0.02em; margin: 0; }
+  #screen-top p { color: var(--sub); margin: 0; font-size: 14px; }
+  .big-btn {
+    width: 100%; max-width: 360px; padding: 18px; border-radius: 14px;
+    background: var(--accent); color: white; font-size: 17px; font-weight: 600;
+    border: none; margin-top: 8px;
+  }
+  .big-btn:active { background: var(--accent-press); }
+  .big-btn.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  .big-btn:disabled { background: #3a3a44; color: #77777f; }
+
+  /* --- scan --- */
+  #screen-scan { padding: 14px; gap: 12px; }
+  .status-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--sub); }
+  .video-wrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #000; border-radius: 14px; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  .ocr-flash {
+    position: absolute; inset: 0; border: 3px solid var(--accent); opacity: 0;
+    border-radius: 14px; pointer-events: none; transition: opacity 0.25s;
+  }
+  .ocr-flash.on { opacity: 1; }
+  .recent-list { max-height: 120px; overflow-y: auto; background: var(--panel); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--sub); border: 1px solid var(--border); }
+  .recent-list div { padding: 3px 0; }
+  .btn-row { display: flex; gap: 10px; }
+  .msg { font-size: 12px; color: var(--danger); background: rgba(229,72,77,0.1); padding: 8px 10px; border-radius: 8px; }
+
+  /* --- result --- */
+  #screen-result { gap: 14px; }
+  .result-summary { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; font-size: 14px; }
+  .result-summary div { display: flex; justify-content: space-between; padding: 4px 0; color: var(--sub); }
+  .result-summary div b { color: var(--text); font-weight: 600; }
+  textarea#output {
+    width: 100%; height: 220px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 13px;
+    font-family: ui-monospace, monospace; resize: vertical;
+  }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: #111; padding: 10px 18px; border-radius: 20px;
+    font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<!-- ============ トップ画面 ============ -->
+<div id="screen-top" class="screen active">
+  <h1>BOOK SCANNER</h1>
+  <p>単C棚スキャン</p>
+  <button class="big-btn" onclick="goToScan()">スキャン開始</button>
+</div>
+
+<!-- ============ スキャン画面 ============ -->
+<div id="screen-scan" class="screen">
+  <div class="status-row">
+    <span>列：<b id="col-num">1</b></span>
+    <span>認識：<b id="col-count">0</b>冊</span>
+  </div>
+  <div class="video-wrap">
+    <video id="video" playsinline muted autoplay></video>
+    <div id="ocr-flash" class="ocr-flash"></div>
+  </div>
+  <canvas id="canvas" style="display:none"></canvas>
+  <div id="scan-msg" class="msg" style="display:none"></div>
+  <div class="recent-list" id="recent-list"></div>
+  <button class="big-btn" id="btn-end-scan" onclick="endScanColumn()">スキャン終了</button>
+  <div class="btn-row" id="after-scan-row" style="display:none">
+    <button class="big-btn secondary" style="flex:1" onclick="nextColumn()">次の列</button>
+    <button class="big-btn" style="flex:1" onclick="finishScan()">完了</button>
+  </div>
+</div>
+
+<!-- ============ 結果画面 ============ -->
+<div id="screen-result" class="screen">
+  <h1 style="font-size:18px;margin:0">結果</h1>
+  <div class="result-summary" id="result-summary"></div>
+  <textarea id="output" readonly></textarea>
+  <div class="btn-row">
+    <button class="big-btn secondary" style="flex:1" onclick="location.reload()">最初から</button>
+    <button class="big-btn" style="flex:1" onclick="copyAll()">全コピー</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================
+   状態管理
+   ========================================================= */
+const SPECIAL_ISBN = "9784063726749"; // 列の区切りを示す特殊ISBN
+
+let stream = null;
+let scanning = false;
+let ocrTimer = null;
+
+let columnNumber = 1;
+let currentColumnSet = new Set();      // 現在の列で既に採用したISBN(重複除外用)
+let queriedTextCache = new Set();      // 既に検索した文字列(同じ問い合わせを繰り返さない)
+
+let allBooks = [];        // {columnNumber, isbn13, title} の一覧(コピー対象・列をまたいだ重複は許可)
+let columnCounts = [];    // 列ごとの取得冊数
+
+/* =========================================================
+   画面切り替え
+   ========================================================= */
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+async function goToScan() {
+  showScreen("screen-scan");
+  await startCamera();
+  startScanningColumn();
+}
+
+/* =========================================================
+   カメラ
+   ========================================================= */
+async function startCamera() {
+  const msgEl = document.getElementById("scan-msg");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } },
+      audio: false
+    });
+    const video = document.getElementById("video");
+    video.srcObject = stream;
+    await video.play();
+    msgEl.style.display = "none";
+  } catch (e) {
+    msgEl.textContent = "カメラを起動できませんでした。ブラウザのカメラ権限(設定 > Safari/Chrome > カメラ)を確認し、HTTPSのURLで開いているか確認してください。";
+    msgEl.style.display = "block";
+  }
+}
+
+function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+}
+
+/* =========================================================
+   列(スキャン)の開始・終了
+   ========================================================= */
+function startScanningColumn() {
+  scanning = true;
+  document.getElementById("btn-end-scan").style.display = "block";
+  document.getElementById("after-scan-row").style.display = "none";
+  document.getElementById("col-num").textContent = columnNumber;
+  document.getElementById("col-count").textContent = currentColumnSet.size;
+  scheduleOcrLoop();
+}
+
+function endScanColumn() {
+  scanning = false;
+  if (ocrTimer) clearTimeout(ocrTimer);
+  document.getElementById("btn-end-scan").style.display = "none";
+  document.getElementById("after-scan-row").style.display = "flex";
+}
+
+function nextColumn() {
+  // 現在の列を確定し、特殊ISBNを追加してから次の列へ
+  columnCounts.push({ col: columnNumber, count: currentColumnSet.size });
+  allBooks.push({ columnNumber, isbn13: SPECIAL_ISBN, title: "(列区切り)" });
+
+  columnNumber += 1;
+  currentColumnSet = new Set();
+  queriedTextCache = new Set();
+  document.getElementById("recent-list").innerHTML = "";
+
+  startScanningColumn();
+}
+
+function finishScan() {
+  // 最後の列。特殊ISBNは追加しない。
+  columnCounts.push({ col: columnNumber, count: currentColumnSet.size });
+  stopCamera();
+  showResult();
+}
+
+/* =========================================================
+   OCRループ(Phase1〜5相当をまとめて実装)
+   一定間隔でフレームを取得し、OCR→Google Books検索→ISBN確定 を行う
+   ========================================================= */
+function scheduleOcrLoop() {
+  if (!scanning) return;
+  ocrTimer = setTimeout(async () => {
+    await captureAndRecognize();
+    scheduleOcrLoop();
+  }, 1800); // 1.8秒おき。動画フレームを間引いて処理負荷を抑える
+}
+
+async function captureAndRecognize() {
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  if (!video.videoWidth) return;
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  flashOcr(true);
+  try {
+    const { data } = await Tesseract.recognize(canvas, "jpn+eng", { logger: () => {} });
+    flashOcr(false);
+
+    const lines = (data.text || "")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => l.length >= 4 && l.length <= 40); // 極端に短い/長いノイズを除外
+
+    for (const line of lines) {
+      if (queriedTextCache.has(line)) continue;
+      queriedTextCache.add(line);
+      await tryResolveIsbn(line);
+    }
+  } catch (e) {
+    flashOcr(false);
+    // OCR失敗はこのフレームを無視して継続
+  }
+}
+
+function flashOcr(on) {
+  document.getElementById("ocr-flash").classList.toggle("on", on);
+}
+
+/* =========================================================
+   Google Books検索 → ISBN確定
+   候補が1件に絞れた場合のみ採用。複数候補・0件は無視。
+   ========================================================= */
+async function tryResolveIsbn(queryText) {
+  try {
+    const url = "https://www.googleapis.com/books/v1/volumes?q=" +
+      encodeURIComponent("intitle:" + queryText) + "&maxResults=5&country=JP";
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const json = await res.json();
+    const items = json.items || [];
+
+    // ISBN_13を持つ候補だけを抽出
+    const withIsbn = items
+      .map(it => {
+        const ids = it.volumeInfo?.industryIdentifiers || [];
+        const isbn13 = ids.find(id => id.type === "ISBN_13")?.identifier;
+        return isbn13 ? { isbn13, title: it.volumeInfo.title } : null;
+      })
+      .filter(Boolean);
+
+    // ユニークなISBNの集合にする(同じISBNの重複候補は1件扱い)
+    const uniqueIsbns = [...new Map(withIsbn.map(x => [x.isbn13, x])).values()];
+
+    if (uniqueIsbns.length !== 1) return; // 0件 or 複数候補 → 無視
+    const candidate = uniqueIsbns[0];
+
+    if (!isValidIsbn13(candidate.isbn13)) return;
+    if (currentColumnSet.has(candidate.isbn13)) return; // 同一列内の重複は追加しない
+
+    currentColumnSet.add(candidate.isbn13);
+    allBooks.push({ columnNumber, isbn13: candidate.isbn13, title: candidate.title });
+
+    document.getElementById("col-count").textContent = currentColumnSet.size;
+    const list = document.getElementById("recent-list");
+    const row = document.createElement("div");
+    row.textContent = candidate.isbn13 + "  " + candidate.title;
+    list.prepend(row);
+  } catch (e) {
+    // 通信エラー等はこの本を無視し、全体は継続
+  }
+}
+
+/* ISBN-13のチェックディジット検証 */
+function isValidIsbn13(raw) {
+  const isbn = raw.replace(/-/g, "");
+  if (!/^97[89]\d{10}$/.test(isbn)) return false;
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    sum += Number(isbn[i]) * (i % 2 === 0 ? 1 : 3);
+  }
+  const check = (10 - (sum % 10)) % 10;
+  return check === Number(isbn[12]);
+}
+
+/* =========================================================
+   結果画面
+   ========================================================= */
+function showResult() {
+  showScreen("screen-result");
+
+  const summaryEl = document.getElementById("result-summary");
+  summaryEl.innerHTML = "";
+  const totalRow = document.createElement("div");
+  totalRow.innerHTML = `<span>総ISBN数</span><b>${allBooks.length}</b>`;
+  summaryEl.appendChild(totalRow);
+
+  const colRow = document.createElement("div");
+  colRow.innerHTML = `<span>スキャンした列数</span><b>${columnCounts.length}</b>`;
+  summaryEl.appendChild(colRow);
+
+  columnCounts.forEach(c => {
+    const row = document.createElement("div");
+    row.innerHTML = `<span>列${c.col}</span><b>${c.count}冊</b>`;
+    summaryEl.appendChild(row);
+  });
+
+  const output = allBooks.map(b => b.isbn13).join("\n");
+  document.getElementById("output").value = output;
+}
+
+function copyAll() {
+  const text = document.getElementById("output").value;
+  navigator.clipboard.writeText(text).then(() => showToast("コピーしました"));
+}
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1500);
+}
+</script>
+</body>
+</html>
